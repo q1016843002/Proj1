@@ -99,55 +99,80 @@ public class FeeBillingFund {
 package com.yourcompany.audit.service;
 
 import com.yourcompany.audit.annotation.AuditMeta;
-import com.yourcompany.business.entity.ClientEntity;
 import com.yourcompany.business.entity.FeeBillingFund;
+import org.javers.core.Javers;
+import org.javers.core.diff.Diff;
 import org.javers.core.diff.changetype.PropertyChange;
 import org.javers.core.diff.changetype.ValueChange;
+import org.javers.core.metamodel.object.InstanceId;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
+import java.lang.reflect.Field;
+import java.util.List;
 
 @Service
 public class FeeBillingFundAuditService {
 
+    @Autowired
+    private Javers javers;
+
     /**
-     * 专属处理入口
+     * 核心比对与格式化入口
      */
-    public void processFundChange(String operator, PropertyChange change, AuditMeta meta, 
-                                  String targetId, ClientEntity oldEntity, ClientEntity newEntity) {
-        
-        // 1. 找对象：去实体里老老实实把这个 Fund 捞出来
-        FeeBillingFund fund = findFeeBillingFund(targetId, oldEntity, newEntity);
-        if (fund == null) return;
+    public void processFundChange(String operator, List<FeeBillingFund> oldFunds, List<FeeBillingFund> newFunds) {
+        if (oldFunds == null && newFunds == null) return;
 
-        // 2. 核心格式装配 (严格按照你的需求)
-        String tabName = "Fund List"; 
-        String fCode = fund.getFundCode() != null ? fund.getFundCode() : "N/A";
-        String fieldLocation = "Fund code - " + fCode; 
-        String changedField = meta.displayName(); 
-        
-        // 3. 提取新旧值（Fund 里面的都是简单值或枚举，直接从 Javers 拿最快）
-        String oldVal = "-";
-        String newVal = "-";
-        if (change instanceof ValueChange) {
-            ValueChange vc = (ValueChange) change;
-            oldVal = vc.getLeft() != null ? vc.getLeft().toString() : "-";
-            newVal = vc.getRight() != null ? vc.getRight().toString() : "-";
-        } 
+        // 1. 直接比对集合
+        Diff diff = javers.compareCollections(oldFunds, newFunds, FeeBillingFund.class);
+        List<PropertyChange> changes = diff.getChangesByType(PropertyChange.class);
 
-        // 4. 落库
-        saveToDatabase(operator, tabName, fieldLocation, changedField, oldVal, newVal);
+        for (PropertyChange change : changes) {
+            AuditMeta meta = getAuditMetaFromChange(change);
+            if (meta == null) continue; // 没有注解的属性直接丢弃
+
+            // 2. 提取变更对象的 ID
+            String targetId = null;
+            if (change.getAffectedGlobalId() instanceof InstanceId) {
+                targetId = ((InstanceId) change.getAffectedGlobalId()).getCdoId().toString();
+            }
+            if (targetId == null) continue;
+
+            // 3. 找回完整的 Fund 对象，以便提取 FundCode
+            FeeBillingFund fund = findFeeBillingFund(targetId, oldFunds, newFunds);
+            if (fund == null) continue;
+
+            // 4. 组装三大金刚：Tab, Location, Field (严格按照需求)
+            String tabName = "Fund List"; 
+            String fCode = fund.getFundCode() != null ? fund.getFundCode() : "N/A";
+            String fieldLocation = "Fund code - " + fCode; 
+            String changedField = meta.displayName(); 
+            
+            // 5. 提取新旧值
+            String oldVal = "-";
+            String newVal = "-";
+            if (change instanceof ValueChange) {
+                ValueChange vc = (ValueChange) change;
+                oldVal = vc.getLeft() != null ? vc.getLeft().toString() : "-";
+                newVal = vc.getRight() != null ? vc.getRight().toString() : "-";
+            } 
+
+            // 6. 落库
+            saveToDatabase(operator, tabName, fieldLocation, changedField, oldVal, newVal);
+        }
     }
 
     /**
-     * 笨办法：遍历找对象
+     * 遍历查找完整对象
      */
-    private FeeBillingFund findFeeBillingFund(String targetId, ClientEntity oldEntity, ClientEntity newEntity) {
-        if (newEntity != null && newEntity.getFeeBillingFunds() != null) {
-            for (FeeBillingFund fund : newEntity.getFeeBillingFunds()) {
+    private FeeBillingFund findFeeBillingFund(String targetId, List<FeeBillingFund> oldFunds, List<FeeBillingFund> newFunds) {
+        if (newFunds != null) {
+            for (FeeBillingFund fund : newFunds) {
                 if (targetId.equals(fund.getId())) return fund;
             }
         }
-        if (oldEntity != null && oldEntity.getFeeBillingFunds() != null) {
-            for (FeeBillingFund fund : oldEntity.getFeeBillingFunds()) {
+        if (oldFunds != null) {
+            for (FeeBillingFund fund : oldFunds) {
                 if (targetId.equals(fund.getId())) return fund;
             }
         }
@@ -155,7 +180,29 @@ public class FeeBillingFundAuditService {
     }
 
     /**
-     * 模拟落库方法 (你需要替换成你真实的 Mapper/Repository 调用)
+     * 工业级反射拿注解
+     */
+    private AuditMeta getAuditMetaFromChange(PropertyChange change) {
+        try {
+            String className = change.getAffectedGlobalId().typeName();
+            if (className.contains("$")) className = className.substring(0, className.indexOf("$"));
+            Class<?> affectedClass = Class.forName(className);
+            Field field = getFieldAcrossHierarchy(affectedClass, change.getPropertyName());
+            if (field != null) return field.getAnnotation(AuditMeta.class);
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private Field getFieldAcrossHierarchy(Class<?> clazz, String fieldName) {
+        while (clazz != null && clazz != Object.class) {
+            try { return clazz.getDeclaredField(fieldName); } 
+            catch (NoSuchFieldException e) { clazz = clazz.getSuperclass(); }
+        }
+        return null;
+    }
+
+    /**
+     * 最终保存逻辑
      */
     private void saveToDatabase(String operator, String tabName, String fieldLocation, 
                                 String changedField, String oldVal, String newVal) {
