@@ -1,0 +1,161 @@
+package com.yourcompany.audit.service;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yourcompany.audit.annotation.AuditMeta;
+import com.yourcompany.business.entity.StandardClientFee;
+import org.javers.core.Javers;
+import org.javers.core.diff.Diff;
+import org.javers.core.diff.changetype.PropertyChange;
+import org.javers.core.diff.changetype.ValueChange;
+import org.javers.core.metamodel.object.InstanceId;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.lang.reflect.Field;
+import java.util.List;
+
+/**
+ * Client Fee 审计全流程一体化服务 (涵盖 JSON 解析、数据洗练与 Javers 比对落库)
+ */
+@Service
+public class ClientFeeAuditService {
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private Javers javers;
+
+    // =========================================================================
+    // 💥 唯一对外暴露的入口：直接把新旧 JSON 扔进来就行！
+    // =========================================================================
+    public void processFeeAuditFromJson(String operator, String oldJsonArray, String newJsonArray) {
+        try {
+            // 1. JSON 直接转换为顶层集合 (内部枚举完成自动转译)
+            List<StandardClientFee> oldFees = objectMapper.readValue(
+                    oldJsonArray, new TypeReference<List<StandardClientFee>>() {}
+            );
+            List<StandardClientFee> newFees = objectMapper.readValue(
+                    newJsonArray, new TypeReference<List<StandardClientFee>>() {}
+            );
+
+            // 2. 遍历处理每一个 Fee 配置
+            int maxSize = Math.max(oldFees.size(), newFees.size());
+            for (int i = 0; i < maxSize; i++) {
+                StandardClientFee oldFee = i < oldFees.size() ? oldFees.get(i) : new StandardClientFee();
+                StandardClientFee newFee = i < newFees.size() ? newFees.get(i) : new StandardClientFee();
+
+                // 提取动态 TabName (优先取新数据的 clientFeeMode)
+                String dynamicTabName = newFee.getClientFeeMode() != null ? newFee.getClientFeeMode() : oldFee.getClientFeeMode();
+
+                // 触发魔法：把深层嵌套的结构全部提炼成 String 影子字段！
+                List<StandardClientFee.ClientFeeService> oldServices = oldFee.getServices();
+                if (oldServices != null) {
+                    oldServices.forEach(StandardClientFee.ClientFeeService::flattenForAudit);
+                }
+
+                List<StandardClientFee.ClientFeeService> newServices = newFee.getServices();
+                if (newServices != null) {
+                    newServices.forEach(StandardClientFee.ClientFeeService::flattenForAudit);
+                }
+
+                // 3. 进入内部比对引擎
+                compareAndSave(operator, dynamicTabName, oldServices, newServices);
+            }
+
+        } catch (Exception e) {
+            System.err.println("Client Fee 审计解析与比对失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    // =========================================================================
+    // ⬇️ 内部私有引擎：纯粹负责 Javers 比对和落库
+    // =========================================================================
+    private void compareAndSave(String operator, String dynamicTabName, 
+                                List<StandardClientFee.ClientFeeService> oldServices, 
+                                List<StandardClientFee.ClientFeeService> newServices) {
+        
+        if (oldServices == null && newServices == null) return;
+
+        // 只让 Javers 比对最核心的 ClientFeeService 集合
+        Diff diff = javers.compareCollections(oldServices, newServices, StandardClientFee.ClientFeeService.class);
+        List<PropertyChange> changes = diff.getChangesByType(PropertyChange.class);
+
+        for (PropertyChange change : changes) {
+            AuditMeta meta = getAuditMetaFromChange(change);
+            if (meta == null) continue;
+
+            String targetId = null;
+            if (change.getAffectedGlobalId() instanceof InstanceId) {
+                targetId = ((InstanceId) change.getAffectedGlobalId()).getCdoId().toString();
+            }
+            if (targetId == null) continue;
+
+            StandardClientFee.ClientFeeService service = findService(targetId, oldServices, newServices);
+            if (service == null) continue;
+
+            // 装配三大金刚 (Tab, Location, Field)
+            String tabName = (dynamicTabName != null && !dynamicTabName.trim().isEmpty()) ? dynamicTabName : "Standard Fee"; 
+            String sName = service.getServiceName() != null ? service.getServiceName() : "N/A";
+            String fieldLocation = "Service - " + sName; 
+            String changedField = meta.displayName(); 
+            
+            // 提取新旧值
+            String oldVal = "-";
+            String newVal = "-";
+            if (change instanceof ValueChange) {
+                ValueChange vc = (ValueChange) change;
+                oldVal = vc.getLeft() != null ? vc.getLeft().toString() : "-";
+                newVal = vc.getRight() != null ? vc.getRight().toString() : "-";
+            } 
+
+            // 落库
+            saveToDatabase(operator, tabName, fieldLocation, changedField, oldVal, newVal);
+        }
+    }
+
+    // =========================================================================
+    // ⬇️ 各种辅助工具方法
+    // =========================================================================
+    private StandardClientFee.ClientFeeService findService(String targetId, 
+            List<StandardClientFee.ClientFeeService> oldS, List<StandardClientFee.ClientFeeService> newS) {
+        if (newS != null) {
+            for (StandardClientFee.ClientFeeService s : newS) {
+                if (targetId.equals(s.getServiceId())) return s;
+            }
+        }
+        if (oldS != null) {
+            for (StandardClientFee.ClientFeeService s : oldS) {
+                if (targetId.equals(s.getServiceId())) return s;
+            }
+        }
+        return null;
+    }
+
+    private AuditMeta getAuditMetaFromChange(PropertyChange change) {
+        try {
+            String className = change.getAffectedGlobalId().typeName();
+            if (className.contains("$")) className = className.substring(0, className.indexOf("$"));
+            Class<?> affectedClass = Class.forName(className);
+            Field field = getFieldAcrossHierarchy(affectedClass, change.getPropertyName());
+            if (field != null) return field.getAnnotation(AuditMeta.class);
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private Field getFieldAcrossHierarchy(Class<?> clazz, String fieldName) {
+        while (clazz != null && clazz != Object.class) {
+            try { return clazz.getDeclaredField(fieldName); } 
+            catch (NoSuchFieldException e) { clazz = clazz.getSuperclass(); }
+        }
+        return null;
+    }
+
+    private void saveToDatabase(String operator, String tabName, String fieldLocation, 
+                                String changedField, String oldVal, String newVal) {
+        System.out.println(String.format("【保存日志】Tab: %s | Loc: %s | Field: %s | Old: %s -> New: %s", 
+                tabName, fieldLocation, changedField, oldVal, newVal));
+    }
+}
