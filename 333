@@ -1,0 +1,65 @@
+package com.yourcompany.business.service;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yourcompany.audit.service.ClientFeeAuditService;
+import com.yourcompany.business.entity.StandardClientFee;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+public class ClientFeeFacade {
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private ClientFeeAuditService clientFeeAuditService;
+
+    /**
+     * @param oldJsonArray 数据库里拿出来转成的 JSON
+     * @param newJsonArray 前端传过来的 JSON
+     */
+    public void updateStandardClientFees(String oldJsonArray, String newJsonArray) {
+        try {
+            // 1. JSON 直接转换为顶层集合 (此时内部枚举已经完成自动转译)
+            List<StandardClientFee> oldFees = objectMapper.readValue(
+                    oldJsonArray, new TypeReference<List<StandardClientFee>>() {}
+            );
+            List<StandardClientFee> newFees = objectMapper.readValue(
+                    newJsonArray, new TypeReference<List<StandardClientFee>>() {}
+            );
+
+            // 2. 遍历处理每一个 Fee 配置
+            int maxSize = Math.max(oldFees.size(), newFees.size());
+            for (int i = 0; i < maxSize; i++) {
+                
+                StandardClientFee oldFee = i < oldFees.size() ? oldFees.get(i) : new StandardClientFee();
+                StandardClientFee newFee = i < newFees.size() ? newFees.get(i) : new StandardClientFee();
+
+                // 💥 提取动态 TabName (优先取新数据的)
+                String dynamicTabName = newFee.getClientFeeMode() != null ? newFee.getClientFeeMode() : oldFee.getClientFeeMode();
+
+                // 💥 触发魔法：把深层嵌套的结构全部提炼成 String 影子字段！
+                List<StandardClientFee.ClientFeeService> oldServices = oldFee.getServices();
+                if (oldServices != null) {
+                    oldServices.forEach(StandardClientFee.ClientFeeService::flattenForAudit);
+                }
+
+                List<StandardClientFee.ClientFeeService> newServices = newFee.getServices();
+                if (newServices != null) {
+                    newServices.forEach(StandardClientFee.ClientFeeService::flattenForAudit);
+                }
+
+                // 3. 丢给专属审计服务进行终极比对落库
+                clientFeeAuditService.processFeeChange("SystemAdmin", dynamicTabName, oldServices, newServices);
+            }
+
+        } catch (Exception e) {
+            System.err.println("Client Fee 审计解析失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+}
