@@ -1,0 +1,205 @@
+package com.yourcompany.business.entity;
+
+import com.yourcompany.audit.annotation.AuditMeta;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+import org.javers.core.metamodel.annotation.Id;
+import org.javers.core.metamodel.annotation.DiffIgnore;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * 客户端费用的终极接收容器 (包含所有嵌套的静态内部类)
+ */
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class StandardClientFee {
+
+    private String subProductName;
+    
+    // 💥 核心：将作为动态的 Tab Name 传递给审计引擎
+    private String clientFeeMode; 
+    
+    private List<ClientFeeService> services;
+
+    // =========================================================
+    // 💥 第一层：核心服务实体 (Javers 真正追踪的目标)
+    // =========================================================
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ClientFeeService {
+
+        @Id // 告诉 Javers 这是独立实体，通过 ID 追踪
+        private String serviceId;
+
+        @AuditMeta(displayName = "Service Name")
+        private String serviceName;
+
+        @AuditMeta(displayName = "Service Taken")
+        private ServiceTaken serviceTaken;
+
+        @AuditMeta(displayName = "Invoice Group")
+        private String invoiceGroup;
+
+        @DiffIgnore // 系统级字段，屏蔽比对
+        private String serviceChangeLogId;
+
+        // 💥 极其重要：把深层嵌套的原始数据对 Javers 隐身！
+        @DiffIgnore
+        private ServiceSectionData serviceSectionData;
+
+        // =========================================================
+        // 💥 影子字段区：把深层数据提炼到表层，供 Javers 舒舒服服地比对
+        // =========================================================
+        @AuditMeta(displayName = "Fee Type")
+        private FeeType feeType;
+
+        @AuditMeta(displayName = "Service Billing Frequency")
+        private BillingFrequency serviceBillingFrequency;
+
+        @AuditMeta(displayName = "Charging Logic")
+        private String chargingLogic;
+
+        @AuditMeta(displayName = "Charging Mechanism")
+        private String chargingMechanism;
+
+        @AuditMeta(displayName = "Fee Frequency")
+        private FeeFrequency feeFrequency;
+
+        // 💥 专门用来存放 Amount 或 Range 拼接后的完美字符串
+        @AuditMeta(displayName = "Amount or Range Details")
+        private String amountOrRangeFormatted;
+
+        // =========================================================
+        // 💥 洗数据引擎：Jackson 转完 JSON 后，调用此方法完成扁平化！
+        // =========================================================
+        public void flattenForAudit() {
+            if (this.serviceSectionData != null) {
+                // 1. 简单字段直接提炼到表层
+                this.feeType = serviceSectionData.getFeeType();
+                this.serviceBillingFrequency = serviceSectionData.getServiceBillingFrequency();
+                this.chargingLogic = serviceSectionData.getChargingLogic();
+                this.chargingMechanism = serviceSectionData.getChargingMechanism();
+                this.feeFrequency = serviceSectionData.getFeeFrequency();
+                
+                // 2. 极其复杂的金额/区间拼接逻辑
+                if (serviceSectionData.getAmountOrRange() != null) {
+                    AmountOrRange aor = serviceSectionData.getAmountOrRange();
+                    
+                    if ("AMOUNT".equalsIgnoreCase(aor.getMode()) && aor.getAmount() != null) {
+                        // 组装成: GBP 17.55
+                        this.amountOrRangeFormatted = aor.getAmount().getPrefix() + " " + aor.getAmount().getValue();
+                        
+                    } else if ("RANGE".equalsIgnoreCase(aor.getMode()) 
+                               && aor.getRangeDetails() != null 
+                               && aor.getRangeDetails().getRanges() != null) {
+                        
+                        // 组装成: From 5 to 50 - BPS 10.0000 \n From 51 to 100 ...
+                        this.amountOrRangeFormatted = aor.getRangeDetails().getRanges().stream()
+                                .map(r -> "From " + r.getRangeFrom() + " to " + r.getRangeTo() + " - " + 
+                                          (r.getCharge() != null ? r.getCharge().getPrefix() + " " + r.getCharge().getValue() : ""))
+                                .collect(Collectors.joining(" \n "));
+                    } else {
+                        this.amountOrRangeFormatted = "-";
+                    }
+                }
+            }
+        }
+
+        // --- 内部枚举群 (自动清洗系统常量) ---
+        public enum ServiceTaken {
+            Y("Yes"), N("No"), UNKNOWN("-");
+            private final String display;
+            ServiceTaken(String display) { this.display = display; }
+            @Override public String toString() { return display; }
+            @JsonCreator public static ServiceTaken fromString(String val) {
+                if (val == null) return UNKNOWN;
+                for (ServiceTaken e : values()) if (e.name().equalsIgnoreCase(val)) return e;
+                return UNKNOWN;
+            }
+        }
+
+        public enum FeeType {
+            PROGRESSIVE("Progressive"), FLAT("Flat"), ABSOLUTE("Absolute"), UNKNOWN("-");
+            private final String display;
+            FeeType(String display) { this.display = display; }
+            @Override public String toString() { return display; }
+            @JsonCreator public static FeeType fromString(String val) {
+                if (val == null) return UNKNOWN;
+                for (FeeType e : values()) if (e.name().equalsIgnoreCase(val)) return e;
+                return UNKNOWN;
+            }
+        }
+
+        public enum BillingFrequency {
+            MONTHLY("Monthly"), QUARTERLY("Quarterly"), SEMI_ANNUALLY("Semi-annually"), ANNUALLY("Annually"), UNKNOWN("-");
+            private final String display;
+            BillingFrequency(String display) { this.display = display; }
+            @Override public String toString() { return display; }
+            @JsonCreator public static BillingFrequency fromString(String val) {
+                if (val == null) return UNKNOWN;
+                for (BillingFrequency e : values()) if (e.name().equalsIgnoreCase(val)) return e;
+                return UNKNOWN;
+            }
+        }
+
+        public enum FeeFrequency {
+            PER_MONTH("Per Month"), PER_QUARTER("Per Quarter"), PER_SEMI_ANNUM("Per Semi-Annum"), PER_ANNUM("Per Annum"), UNKNOWN("-");
+            private final String display;
+            FeeFrequency(String display) { this.display = display; }
+            @Override public String toString() { return display; }
+            @JsonCreator public static FeeFrequency fromString(String val) {
+                if (val == null) return UNKNOWN;
+                for (FeeFrequency e : values()) if (e.name().equalsIgnoreCase(val)) return e;
+                return UNKNOWN;
+            }
+        }
+    }
+
+    // =========================================================
+    // 💥 第二层及以下：纯粹的数据承载类 (只为接 JSON 而生，Javers 不用管)
+    // =========================================================
+    @Data @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ServiceSectionData {
+        private ClientFeeService.FeeType feeType;
+        private ClientFeeService.BillingFrequency serviceBillingFrequency;
+        private String chargingLogic;
+        private String chargingMechanism;
+        private ClientFeeService.FeeFrequency feeFrequency;
+        private AmountOrRange amountOrRange;
+    }
+
+    @Data @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class AmountOrRange {
+        private String mode;
+        private Amount amount;
+        private RangeDetails rangeDetails;
+    }
+
+    @Data @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class Amount {
+        private String value;
+        private String prefix;
+    }
+
+    @Data @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class RangeDetails {
+        private String aggregationRule;
+        private List<RangeItem> ranges;
+    }
+
+    @Data @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class RangeItem {
+        private String rangeFrom;
+        private String rangeTo;
+        private Charge charge;
+    }
+
+    @Data @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class Charge {
+        private String value;
+        private String prefix;
+    }
+}
