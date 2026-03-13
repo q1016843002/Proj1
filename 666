@@ -3,7 +3,7 @@ package com.yourcompany.audit.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yourcompany.audit.annotation.AuditMeta;
-import com.yourcompany.business.entity.FeeAdjustmentAuditProduct;
+import com.yourcompany.business.entity.FeeAdjustmentForAuditTrail;
 import org.javers.core.Javers;
 import org.javers.core.diff.Diff;
 import org.javers.core.diff.changetype.PropertyChange;
@@ -30,14 +30,14 @@ public class FeeAdjustmentAuditTrailService {
      */
     public void processFeeAdjustmentAudit(String operator, String oldJson, String newJson) {
         try {
-            List<FeeAdjustmentAuditProduct> oldProducts = objectMapper.readValue(oldJson, new TypeReference<List<FeeAdjustmentAuditProduct>>() {});
-            List<FeeAdjustmentAuditProduct> newProducts = objectMapper.readValue(newJson, new TypeReference<List<FeeAdjustmentAuditProduct>>() {});
+            List<FeeAdjustmentForAuditTrail> oldProducts = objectMapper.readValue(oldJson, new TypeReference<List<FeeAdjustmentForAuditTrail>>() {});
+            List<FeeAdjustmentForAuditTrail> newProducts = objectMapper.readValue(newJson, new TypeReference<List<FeeAdjustmentForAuditTrail>>() {});
 
-            // 压平所有 Tab 下的 Services
-            List<FeeAdjustmentAuditProduct.ConfigService> oldFlat = flatten(oldProducts);
-            List<FeeAdjustmentAuditProduct.ConfigService> newFlat = flatten(newProducts);
+            // 压平不同 Tab 下的所有 Services
+            List<FeeAdjustmentForAuditTrail.ConfigService> oldFlat = flatten(oldProducts);
+            List<FeeAdjustmentForAuditTrail.ConfigService> newFlat = flatten(newProducts);
 
-            Diff diff = javers.compareCollections(oldFlat, newFlat, FeeAdjustmentAuditProduct.ConfigService.class);
+            Diff diff = javers.compareCollections(oldFlat, newFlat, FeeAdjustmentForAuditTrail.ConfigService.class);
             List<PropertyChange> changes = diff.getChangesByType(PropertyChange.class);
 
             for (PropertyChange change : changes) {
@@ -45,10 +45,10 @@ public class FeeAdjustmentAuditTrailService {
                 if (meta == null) continue;
 
                 String targetId = ((InstanceId) change.getAffectedGlobalId()).getCdoId().toString();
-                FeeAdjustmentAuditProduct.ConfigService service = find(targetId, oldFlat, newFlat);
+                FeeAdjustmentForAuditTrail.ConfigService service = find(targetId, oldFlat, newFlat);
                 if (service == null) continue;
 
-                // 拼装审计字段
+                // 提取清洗好的审计字段
                 String tabName = service.getParentTabName();
                 String fieldLocation = service.getAuditFieldLocation();
                 String changedField = meta.displayName();
@@ -68,26 +68,25 @@ public class FeeAdjustmentAuditTrailService {
         }
     }
 
-    private List<FeeAdjustmentAuditProduct.ConfigService> flatten(List<FeeAdjustmentAuditProduct> products) {
-        List<FeeAdjustmentAuditProduct.ConfigService> flatList = new ArrayList<>();
+    private List<FeeAdjustmentForAuditTrail.ConfigService> flatten(List<FeeAdjustmentForAuditTrail> products) {
+        List<FeeAdjustmentForAuditTrail.ConfigService> flatList = new ArrayList<>();
         if (products == null) return flatList;
-        for (FeeAdjustmentAuditProduct p : products) {
+        for (FeeAdjustmentForAuditTrail p : products) {
             if (p.getServices() == null) continue;
-            for (FeeAdjustmentAuditProduct.ConfigService s : p.getServices()) {
-                s.flattenForAudit(p.getName()); // 传入 TabName 触发内部清洗和 Location 计算
+            for (FeeAdjustmentForAuditTrail.ConfigService s : p.getServices()) {
+                s.flattenForAudit(p.getName()); // 注入 TabName 并触发清洗
                 flatList.add(s);
             }
         }
         return flatList;
     }
 
-    private FeeAdjustmentAuditProduct.ConfigService find(String id, List<FeeAdjustmentAuditProduct.ConfigService> l1, List<FeeAdjustmentAuditProduct.ConfigService> l2) {
-        for (FeeAdjustmentAuditProduct.ConfigService s : l2) if (id.equals(s.getServiceId())) return s;
-        for (FeeAdjustmentAuditProduct.ConfigService s : l1) if (id.equals(s.getServiceId())) return s;
+    private FeeAdjustmentForAuditTrail.ConfigService find(String id, List<FeeAdjustmentForAuditTrail.ConfigService> l1, List<FeeAdjustmentForAuditTrail.ConfigService> l2) {
+        for (FeeAdjustmentForAuditTrail.ConfigService s : l2) if (id.equals(s.getServiceId())) return s;
+        for (FeeAdjustmentForAuditTrail.ConfigService s : l1) if (id.equals(s.getServiceId())) return s;
         return null;
     }
 
-    // 💥 包含 $$ 修复版，兼容 Spring 代理和内部类
     private AuditMeta getAuditMetaFromChange(PropertyChange change) {
         try {
             String className = change.getAffectedGlobalId().typeName();
