@@ -1,0 +1,199 @@
+package com.yourcompany.business.entity;
+
+import com.yourcompany.audit.annotation.AuditMeta;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Data;
+import org.javers.core.metamodel.annotation.DiffIgnore;
+import org.javers.core.metamodel.annotation.Id;
+
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class FeeAdjustmentAuditProduct {
+
+    private String name; // Minimum Fee / Year on Year Review / Discount & Exceptions
+    private List<ConfigService> services;
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ConfigService {
+
+        @Id
+        private String serviceId;
+
+        @DiffIgnore
+        private String parentTabName; // 记忆外层 name 作为 Audit Trail 的 Tab
+
+        @AuditMeta(displayName = "Config Name")
+        private String configName;
+
+        @AuditMeta(displayName = "Service Taken")
+        private String serviceTakenFormatted;
+
+        @JsonProperty("serViceTaken")
+        private String serViceTakenRaw;
+
+        @DiffIgnore
+        private SectionData sectionData;
+
+        @DiffIgnore
+        private String serviceChangeLogId;
+
+        // 💥 影子字段：由 Service 计算并填入，用于落库的 Field Location
+        @DiffIgnore
+        private String auditFieldLocation;
+
+        // 💥 影子字段区：所有 Tab 共用的扁平化字段池
+        @AuditMeta(displayName = "Client Fee Mode")
+        private String clientFeeMode;
+
+        @AuditMeta(displayName = "Minimum Fee Logic")
+        private String miniumFeeLogic;
+
+        @AuditMeta(displayName = "Service Billing Frequency")
+        private String serviceBillingFrequency;
+
+        @AuditMeta(displayName = "Charging Logic")
+        private String chargingLogic;
+
+        @AuditMeta(displayName = "Fee Frequency")
+        private String feeFrequency;
+
+        @AuditMeta(displayName = "Minimum Fee")
+        private String minimumFeeFormatted;
+
+        @AuditMeta(displayName = "Effective From")
+        private String effectiveFrom;
+
+        @AuditMeta(displayName = "Effective To")
+        private String effectiveTo;
+
+        @AuditMeta(displayName = "Percentage Increase")
+        private String percentageIncrease;
+
+        @AuditMeta(displayName = "Discount Target Type")
+        private String discountTargetType;
+
+        @AuditMeta(displayName = "Discount Duration Type")
+        private String discountDurationType;
+
+        @AuditMeta(displayName = "Discount Value Type")
+        private String discountValueType;
+
+        @AuditMeta(displayName = "Amount")
+        private String amountFormatted;
+
+        @AuditMeta(displayName = "Applied")
+        private String applied;
+
+        @AuditMeta(displayName = "Applied To Invoice")
+        private String appliedToInvoice;
+
+        /**
+         * 核心：在比对前进行数据“脱壳”与清洗
+         */
+        public void flattenForAudit(String tabName) {
+            this.parentTabName = tabName;
+            this.serviceTakenFormatted = "Y".equalsIgnoreCase(serViceTakenRaw) ? "Yes" : "No";
+
+            if (this.sectionData == null) return;
+
+            // 1. 枚举与格式化转换 (下划线转首字母大写)
+            this.clientFeeMode = formatEnum(sectionData.getClientFeeMode());
+            this.miniumFeeLogic = formatEnum(sectionData.getMiniumFeeLogic());
+            this.serviceBillingFrequency = formatEnum(sectionData.getServiceBillingFrequency());
+            this.chargingLogic = formatEnum(sectionData.getChargingLogic());
+            this.feeFrequency = formatEnum(sectionData.getFeeFrequency());
+            this.effectiveFrom = formatDate(sectionData.getEffectiveFrom());
+            this.effectiveTo = formatDate(sectionData.getEffecttiveTo());
+            this.discountTargetType = formatEnum(sectionData.getDiscountTargetType());
+            this.discountDurationType = formatEnum(sectionData.getDiscountDurationType());
+            this.discountValueType = formatEnum(sectionData.getDiscountValueType());
+            this.applied = formatEnum(sectionData.getApplied());
+            this.appliedToInvoice = formatYesNo(sectionData.getAppliedToInvoice());
+
+            // 2. 特殊数据拼接
+            if (sectionData.getMinimumFee() != null) {
+                this.minimumFeeFormatted = (sectionData.getMinimumFee().prefix != null ? sectionData.getMinimumFee().prefix : "") 
+                                           + (sectionData.getMinimumFee().value != null ? sectionData.getMinimumFee().value : "");
+            }
+            if (sectionData.getPercentageIncrease() != null) {
+                this.percentageIncrease = sectionData.getPercentageIncrease().value + "%";
+            }
+            if (sectionData.getAmount() != null) {
+                AmountObj amt = sectionData.getAmount();
+                if ("PERCENTAGE".equalsIgnoreCase(amt.type)) {
+                    this.amountFormatted = amt.value + "%";
+                } else {
+                    this.amountFormatted = (amt.prefix != null ? amt.prefix : "") + (amt.value != null ? amt.value : "");
+                }
+            }
+
+            // 3. 计算动态的 Field Location
+            assembleFieldLocation(tabName);
+        }
+
+        private void assembleFieldLocation(String tabName) {
+            if ("Minimum Fee".equalsIgnoreCase(tabName)) {
+                this.auditFieldLocation = join("-", configName, clientFeeMode, sectionData.subProductName, miniumFeeLogic, sectionData.service, sectionData.category);
+            } else if ("Year on Year Review".equalsIgnoreCase(tabName)) {
+                this.auditFieldLocation = join("-", configName, clientFeeMode, effectiveFrom);
+            } else if ("Discount & Exceptions".equalsIgnoreCase(tabName)) {
+                this.auditFieldLocation = join("-", configName, clientFeeMode, discountTargetType, discountDurationType, discountValueType, effectiveFrom);
+            }
+        }
+
+        private String formatEnum(String raw) {
+            if (raw == null || raw.isEmpty()) return "-";
+            return Stream.of(raw.toLowerCase().split("_"))
+                    .map(word -> word.substring(0, 1).toUpperCase() + word.substring(1))
+                    .collect(Collectors.joining(" "));
+        }
+
+        private String formatDate(String raw) {
+            if (raw == null || raw.length() < 8) return "-";
+            return raw.substring(6, 8) + "/" + raw.substring(4, 6) + "/" + raw.substring(0, 4);
+        }
+
+        private String formatYesNo(String raw) {
+            if (raw == null) return "-";
+            return "YES".equalsIgnoreCase(raw) ? "Yes" : ("NO".equalsIgnoreCase(raw) ? "No" : raw);
+        }
+
+        private String join(String delimiter, String... parts) {
+            return Stream.of(parts).filter(p -> p != null && !p.isEmpty()).collect(Collectors.joining(delimiter));
+        }
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class SectionData {
+        private String subProductName;
+        private String clientFeeMode;
+        private String miniumFeeLogic;
+        private String service;
+        private String category;
+        private String serviceBillingFrequency;
+        private String chargingLogic;
+        private String chargingMechanism;
+        private String feeFrequency;
+        private MinFee minimumFee;
+        private String effectiveFrom;
+        private String effecttiveTo;
+        private ValueObj percentageIncrease;
+        private String discountTargetType;
+        private String discountDurationType;
+        private String discountValueType;
+        private AmountObj amount;
+        private String applied;
+        private String appliedToInvoice;
+    }
+
+    @Data public static class MinFee { String prefix; String value; }
+    @Data public static class ValueObj { String value; }
+    @Data public static class AmountObj { String type; String prefix; String value; }
+}
