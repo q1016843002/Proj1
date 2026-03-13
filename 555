@@ -13,7 +13,7 @@ import java.util.stream.Stream;
 
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class FeeAdjustmentAuditProduct {
+public class FeeAdjustmentForAuditTrail {
 
     private String name; // Minimum Fee / Year on Year Review / Discount & Exceptions
     private List<ConfigService> services;
@@ -94,7 +94,7 @@ public class FeeAdjustmentAuditProduct {
         private String appliedToInvoice;
 
         /**
-         * 核心：在比对前进行数据“脱壳”与清洗
+         * 核心：数据清洗与影子字段填充
          */
         public void flattenForAudit(String tabName) {
             this.parentTabName = tabName;
@@ -102,7 +102,7 @@ public class FeeAdjustmentAuditProduct {
 
             if (this.sectionData == null) return;
 
-            // 1. 枚举与格式化转换 (下划线转首字母大写)
+            // 1. 格式化转换 (下划线转首字母大写)
             this.clientFeeMode = formatEnum(sectionData.getClientFeeMode());
             this.miniumFeeLogic = formatEnum(sectionData.getMiniumFeeLogic());
             this.serviceBillingFrequency = formatEnum(sectionData.getServiceBillingFrequency());
@@ -116,7 +116,7 @@ public class FeeAdjustmentAuditProduct {
             this.applied = formatEnum(sectionData.getApplied());
             this.appliedToInvoice = formatYesNo(sectionData.getAppliedToInvoice());
 
-            // 2. 特殊数据拼接
+            // 2. 特殊数据拼接 (金额与百分比)
             if (sectionData.getMinimumFee() != null) {
                 this.minimumFeeFormatted = (sectionData.getMinimumFee().prefix != null ? sectionData.getMinimumFee().prefix : "") 
                                            + (sectionData.getMinimumFee().value != null ? sectionData.getMinimumFee().value : "");
@@ -133,7 +133,7 @@ public class FeeAdjustmentAuditProduct {
                 }
             }
 
-            // 3. 计算动态的 Field Location
+            // 3. 动态计算 Field Location
             assembleFieldLocation(tabName);
         }
 
