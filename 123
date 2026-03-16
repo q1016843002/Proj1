@@ -1,0 +1,93 @@
+/**
+         * 💥 修复版：严格的路由隔离清洗引擎
+         */
+        public void flattenForAudit(String tabName) {
+            this.parentTabName = tabName;
+
+            if (this.sectionData == null) return;
+
+            // 提取公共字段 (如果它们在三个 Tab 里确实都有的话，比如 configName 就不需要洗，直接用)
+            // 注意：不要在这里给不属于当前 Tab 的字段赋值！
+
+            if ("Minimum Fee".equalsIgnoreCase(tabName)) {
+                // 1. 专属 Minimum Fee 的字段
+                this.serviceTakenFormatted = formatYesNoStrict(serViceTakenRaw);
+                this.clientFeeMode = formatEnumStrict(sectionData.getClientFeeMode());
+                this.miniumFeeLogic = formatEnumStrict(sectionData.getMiniumFeeLogic());
+                this.serviceBillingFrequency = formatEnumStrict(sectionData.getServiceBillingFrequency());
+                this.chargingLogic = formatEnumStrict(sectionData.getChargingLogic());
+                this.feeFrequency = formatEnumStrict(sectionData.getFeeFrequency());
+
+                if (sectionData.getMinimumFee() != null) {
+                    this.minimumFeeFormatted = joinWithoutNull("", sectionData.getMinimumFee().prefix, sectionData.getMinimumFee().value);
+                }
+                
+                // 专属的 Location
+                this.auditFieldLocation = joinWithoutNull("-", configName, clientFeeMode, sectionData.getSubProductName(), miniumFeeLogic, sectionData.getService(), sectionData.getCategory());
+
+            } else if ("Year on Year Review".equalsIgnoreCase(tabName)) {
+                // 2. 专属 YoY Review 的字段
+                this.effectiveFrom = formatDateStrict(sectionData.getEffectiveFrom());
+                
+                // (根据你的 JSON，YoY 也有 clientFeeMode 用来拼装 location)
+                this.clientFeeMode = formatEnumStrict(sectionData.getClientFeeMode()); 
+                
+                if (sectionData.getPercentageIncrease() != null && sectionData.getPercentageIncrease().value != null) {
+                    this.percentageIncrease = sectionData.getPercentageIncrease().value + "%";
+                }
+
+                // 专属的 Location
+                this.auditFieldLocation = joinWithoutNull("-", configName, clientFeeMode, effectiveFrom);
+
+            } else if ("Discount & Exceptions".equalsIgnoreCase(tabName)) {
+                // 3. 专属 Discount 的字段
+                this.clientFeeMode = formatEnumStrict(sectionData.getClientFeeMode());
+                this.discountTargetType = formatEnumStrict(sectionData.getDiscountTargetType());
+                this.discountDurationType = formatEnumStrict(sectionData.getDiscountDurationType());
+                this.discountValueType = formatEnumStrict(sectionData.getDiscountValueType());
+                this.effectiveFrom = formatDateStrict(sectionData.getEffectiveFrom());
+                this.effectiveTo = formatDateStrict(sectionData.getEffecttiveTo());
+                this.applied = formatEnumStrict(sectionData.getApplied());
+                this.appliedToInvoice = formatYesNoStrict(sectionData.getAppliedToInvoice());
+
+                if (sectionData.getAmount() != null) {
+                    AmountObj amt = sectionData.getAmount();
+                    if ("PERCENTAGE".equalsIgnoreCase(amt.type) && amt.value != null) {
+                        this.amountFormatted = amt.value + "%";
+                    } else {
+                        this.amountFormatted = joinWithoutNull(" ", amt.prefix, amt.value);
+                    }
+                }
+
+                // 专属的 Location
+                this.auditFieldLocation = joinWithoutNull("-", configName, clientFeeMode, discountTargetType, discountDurationType, discountValueType, effectiveFrom);
+            }
+        }
+
+        // ==========================================================
+        // 💥 工具方法必须严格返回 null，绝对不能返回 "-" 或者 "No"
+        // ==========================================================
+        
+        private String formatEnumStrict(String raw) {
+            if (raw == null || raw.trim().isEmpty()) return null; // 必须返回 null，让 Javers 忽略
+            return Stream.of(raw.toLowerCase().split("_"))
+                    .map(word -> word.substring(0, 1).toUpperCase() + word.substring(1))
+                    .collect(Collectors.joining(" "));
+        }
+
+        private String formatDateStrict(String raw) {
+            if (raw == null || raw.length() < 8) return null; // 必须返回 null
+            return raw.substring(6, 8) + "/" + raw.substring(4, 6) + "/" + raw.substring(0, 4);
+        }
+
+        private String formatYesNoStrict(String raw) {
+            if (raw == null || raw.trim().isEmpty()) return null; // 如果 JSON 里压根没传这个字段，必须是 null
+            return "Y".equalsIgnoreCase(raw) || "YES".equalsIgnoreCase(raw) ? "Yes" : "No";
+        }
+
+        private String joinWithoutNull(String delimiter, String... parts) {
+            String result = Stream.of(parts)
+                    .filter(p -> p != null && !p.trim().isEmpty()) // 过滤掉所有 null 和空字符串
+                    .collect(Collectors.joining(delimiter));
+            return result.isEmpty() ? null : result;
+        }
