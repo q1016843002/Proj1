@@ -1,8 +1,8 @@
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.BiFunction;
 
+// 如果在 Spring 项目里，这个通常是个 @Service
 public class WorkflowAuditService {
 
     private static final String STATUS_INCOMPLETE = "INCOMPLETE";
@@ -15,13 +15,16 @@ public class WorkflowAuditService {
     
     private static final String NEW_RECORD_PLACEHOLDER = "-";
 
-    /**
-     * @param previousActorMapper 传入 BiFunction，接收 (Entity, Status) 两个参数，返回 action_by
-     */
+    // 依赖注入你的 Mapper
+    private final FeeBillingWorkflowMapper workflowMapper;
+
+    public WorkflowAuditService(FeeBillingWorkflowMapper workflowMapper) {
+        this.workflowMapper = workflowMapper;
+    }
+
     public List<WorkflowDiff> compareEntities(
             FeeBillingWorkflowEntity oldEntity,
-            FeeBillingWorkflowEntity newEntity,
-            BiFunction<FeeBillingWorkflowEntity, String, String> previousActorMapper) {
+            FeeBillingWorkflowEntity newEntity) {
 
         List<WorkflowDiff> diffs = new ArrayList<>();
 
@@ -30,7 +33,6 @@ public class WorkflowAuditService {
         }
 
         boolean isNewRecord = (oldEntity == null);
-
         String oldStatus = isNewRecord ? NEW_RECORD_PLACEHOLDER : oldEntity.getStatus();
         
         boolean statusChanged = isNewRecord || !Objects.equals(oldEntity.getStatus(), newEntity.getStatus());
@@ -41,12 +43,31 @@ public class WorkflowAuditService {
         }
 
         // --- 1. 记录 Maker/Checker 变更 ---
-        String roleLabel = STATUS_INCOMPLETE.equals(newEntity.getStatus()) ? FIELD_MAKER : FIELD_CHECKER;
-        
-        // 【回调 Mapper】：传入 newEntity 和 你需要的 status
-        // 注意：这里我暂时传入了 newEntity.getStatus()，你可以根据业务实际需要改为 oldStatus
-        String previousActor = isNewRecord ? NEW_RECORD_PLACEHOLDER 
-                                           : previousActorMapper.apply(newEntity, newEntity.getStatus());
+        boolean isMaker = STATUS_INCOMPLETE.equals(newEntity.getStatus());
+        String roleLabel = isMaker ? FIELD_MAKER : FIELD_CHECKER;
+        String previousActor = NEW_RECORD_PLACEHOLDER;
+
+        if (!isNewRecord) {
+            // 获取关联的业务 ID 和当前记录的 ID
+            Long feeBillingId = newEntity.getFeeBillingId(); // 假设有这个 getter
+            Long currentId = newEntity.getId();             // 假设有这个 getter
+
+            FeeBillingWorkflowEntity prevEntity;
+            if (isMaker) {
+                // 如果当前是 Maker，去查上一个状态为 INCOMPLETE 的记录
+                prevEntity = workflowMapper.getPreviousFeeBillingWorkflowByFeeBillingId(
+                        feeBillingId, STATUS_INCOMPLETE, currentId);
+            } else {
+                // 如果当前是 Checker，去查上一个 COMPLETE 状态的记录
+                prevEntity = workflowMapper.getPreviousCompletedFeeBillingWorkflowByFeeBillingId(
+                        feeBillingId, currentId);
+            }
+
+            // 如果查到了历史记录，取其 action_by；否则兜底使用占位符
+            if (prevEntity != null && prevEntity.getActionBy() != null) {
+                previousActor = prevEntity.getActionBy();
+            }
+        }
         
         diffs.add(new WorkflowDiff(roleLabel, previousActor, newEntity.getActionBy()));
 
