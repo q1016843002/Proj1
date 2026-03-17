@@ -1,13 +1,12 @@
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 
 public class WorkflowAuditService {
 
     private static final String STATUS_INCOMPLETE = "INCOMPLETE";
     private static final String STATUS_REJECT = "REJECT";
-    private static final String STATUS_APPROVED = "APPROVED"; // 假设 APPROVED 也是 COMPLETE 的一种
 
     private static final String FIELD_MAKER = "Maker";
     private static final String FIELD_CHECKER = "Checker";
@@ -16,10 +15,13 @@ public class WorkflowAuditService {
     
     private static final String NEW_RECORD_PLACEHOLDER = "-";
 
+    /**
+     * @param previousActorMapper 传入 BiFunction，接收 (Entity, Status) 两个参数，返回 action_by
+     */
     public List<WorkflowDiff> compareEntities(
             FeeBillingWorkflowEntity oldEntity,
             FeeBillingWorkflowEntity newEntity,
-            Function<FeeBillingWorkflowEntity, String> previousActorMapper) {
+            BiFunction<FeeBillingWorkflowEntity, String, String> previousActorMapper) {
 
         List<WorkflowDiff> diffs = new ArrayList<>();
 
@@ -41,17 +43,10 @@ public class WorkflowAuditService {
         // --- 1. 记录 Maker/Checker 变更 ---
         String roleLabel = STATUS_INCOMPLETE.equals(newEntity.getStatus()) ? FIELD_MAKER : FIELD_CHECKER;
         
-        // 【核心优化点：按需调用 Mapper，最大程度减少查询】
-        String previousActor;
-        if (isNewRecord) {
-            previousActor = NEW_RECORD_PLACEHOLDER;
-        } else if (isTargetStatusForPreviousActor(oldEntity.getStatus())) {
-            // 如果旧记录刚好就是我们要找的 INCOMPLETE 或 COMPLETE 状态，直接就地取材！
-            previousActor = oldEntity.getActionBy();
-        } else {
-            // 只有当 oldEntity 是 PENDING_AM 等中间状态时，才真正去调用 mapper 查库
-            previousActor = previousActorMapper.apply(newEntity);
-        }
+        // 【回调 Mapper】：传入 newEntity 和 你需要的 status
+        // 注意：这里我暂时传入了 newEntity.getStatus()，你可以根据业务实际需要改为 oldStatus
+        String previousActor = isNewRecord ? NEW_RECORD_PLACEHOLDER 
+                                           : previousActorMapper.apply(newEntity, newEntity.getStatus());
         
         diffs.add(new WorkflowDiff(roleLabel, previousActor, newEntity.getActionBy()));
 
@@ -70,19 +65,5 @@ public class WorkflowAuditService {
         }
 
         return diffs;
-    }
-
-    /**
-     * 判断某个状态是否属于我们要提取 action_by 的目标状态 (INCOMPLETE 或 你定义的 COMPLETE 类状态)
-     */
-    private boolean isTargetStatusForPreviousActor(String status) {
-        if (status == null) return false;
-        
-        // 根据你的业务定义，这里把 INCOMPLETE 和所有算作 COMPLETE 的状态放进来
-        // 你提到：reject 这些状态我们称之为 COMPLETE，所以这里需要包含 REJECT 以及最终的 APPROVED 等
-        return STATUS_INCOMPLETE.equals(status) 
-                || STATUS_REJECT.equals(status) 
-                || STATUS_APPROVED.equals(status);
-        // 如果还有其他的状态属于 COMPLETE 的范畴（比如 CANCELLED），也可以加在这里
     }
 }
