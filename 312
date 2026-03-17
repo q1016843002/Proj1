@@ -1,0 +1,70 @@
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Function;
+
+public class WorkflowAuditService {
+
+    private static final String STATUS_INCOMPLETE = "INCOMPLETE";
+    private static final String STATUS_REJECT = "REJECT";
+
+    private static final String FIELD_MAKER = "Maker";
+    private static final String FIELD_CHECKER = "Checker";
+    private static final String FIELD_STATUS = "status";
+    private static final String FIELD_REJECTION_REASON = "Rejection reason";
+    
+    // 定义占位符常量
+    private static final String NEW_RECORD_PLACEHOLDER = "-";
+
+    public List<WorkflowDiff> compareEntities(
+            FeeBillingWorkflowEntity oldEntity,
+            FeeBillingWorkflowEntity newEntity,
+            Function<FeeBillingWorkflowEntity, String> previousActorMapper) {
+
+        List<WorkflowDiff> diffs = new ArrayList<>();
+
+        if (newEntity == null) {
+            return diffs;
+        }
+
+        // 核心判断：是否为全新创建的记录
+        boolean isNewRecord = (oldEntity == null);
+
+        // 获取比对用的旧值（如果是新记录，旧值视为 "-"，但在做比较时要特别处理）
+        String oldStatus = isNewRecord ? NEW_RECORD_PLACEHOLDER : oldEntity.getStatus();
+        
+        // 比较是否发生变化：如果是新记录，必定视为发生了改变
+        boolean statusChanged = isNewRecord || !Objects.equals(oldEntity.getStatus(), newEntity.getStatus());
+        boolean actionByChanged = isNewRecord || !Objects.equals(oldEntity.getActionBy(), newEntity.getActionBy());
+
+        // 如果既不是新记录，且状态和人都没变，直接返回
+        if (!statusChanged && !actionByChanged) {
+            return diffs;
+        }
+
+        // --- 1. 记录 Maker/Checker 变更 ---
+        String roleLabel = STATUS_INCOMPLETE.equals(newEntity.getStatus()) ? FIELD_MAKER : FIELD_CHECKER;
+        
+        // 关键逻辑：如果是新记录，previous 直接给 "-"；否则再去查 Mapper
+        String previousActor = isNewRecord ? NEW_RECORD_PLACEHOLDER : previousActorMapper.apply(newEntity);
+        
+        diffs.add(new WorkflowDiff(roleLabel, previousActor, newEntity.getActionBy()));
+
+        // --- 2. 记录 Status 变更 ---
+        if (statusChanged) {
+            // 这里旧状态已经处理过，如果是新记录会自动带入 "-"
+            diffs.add(new WorkflowDiff(FIELD_STATUS, oldStatus, newEntity.getStatus()));
+
+            // --- 3. 记录 驳回原因 ---
+            if (STATUS_REJECT.equals(newEntity.getStatus())) {
+                diffs.add(new WorkflowDiff(
+                        FIELD_REJECTION_REASON,
+                        "", // 之前你提到拒因的 previous 是“空”，这里继续保持为空字符串 (或者你也可以改成 NEW_RECORD_PLACEHOLDER)
+                        newEntity.getActionComment()
+                ));
+            }
+        }
+
+        return diffs;
+    }
+}
