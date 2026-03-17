@@ -1,0 +1,70 @@
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Function;
+
+public class WorkflowAuditService {
+
+    // 定义常量，避免代码中出现魔法字符串 (Magic Strings)
+    private static final String STATUS_INCOMPLETE = "INCOMPLETE";
+    private static final String STATUS_REJECT = "REJECT";
+
+    private static final String FIELD_MAKER = "Maker";
+    private static final String FIELD_CHECKER = "Checker";
+    private static final String FIELD_STATUS = "status";
+    private static final String FIELD_REJECTION_REASON = "Rejection reason";
+
+    /**
+     * 比较两个 FeeBillingWorkflowEntity 并生成变更记录
+     *
+     * @param oldEntity           历史记录
+     * @param newEntity           当前记录
+     * @param previousActorMapper 你的 Mapper 方法 (输入 Entity, 输出上一个 Maker/Checker 的 action_by)
+     * @return 变更记录列表
+     */
+    public List<WorkflowDiff> compareEntities(
+            FeeBillingWorkflowEntity oldEntity,
+            FeeBillingWorkflowEntity newEntity,
+            Function<FeeBillingWorkflowEntity, String> previousActorMapper) {
+
+        List<WorkflowDiff> diffs = new ArrayList<>();
+
+        // 防御性编程：防止传入的实体为空
+        if (oldEntity == null || newEntity == null) {
+            return diffs;
+        }
+
+        // 使用 Objects.equals 安全判断字段是否发生变化
+        boolean statusChanged = !Objects.equals(oldEntity.getStatus(), newEntity.getStatus());
+        boolean actionByChanged = !Objects.equals(oldEntity.getActionBy(), newEntity.getActionBy());
+
+        // 如果状态和操作人都没变，直接返回空列表
+        if (!statusChanged && !actionByChanged) {
+            return diffs;
+        }
+
+        // --- 1. 记录 Maker/Checker 变更 ---
+        // 只要触发了比较（状态变或人变），就需要记录操作人
+        String roleLabel = STATUS_INCOMPLETE.equals(newEntity.getStatus()) ? FIELD_MAKER : FIELD_CHECKER;
+        String previousActor = previousActorMapper.apply(newEntity);
+
+        diffs.add(new WorkflowDiff(roleLabel, previousActor, newEntity.getActionBy()));
+
+        // --- 2. 记录 Status 变更 ---
+        if (statusChanged) {
+            diffs.add(new WorkflowDiff(FIELD_STATUS, oldEntity.getStatus(), newEntity.getStatus()));
+
+            // --- 3. 记录 驳回原因 (仅当新状态为 REJECT 且状态发生改变时) ---
+            if (STATUS_REJECT.equals(newEntity.getStatus())) {
+                // 如果数据库要求 previous 必须为 null，这里传 null；如果要求空字符串，传 ""
+                diffs.add(new WorkflowDiff(
+                        FIELD_REJECTION_REASON,
+                        null, 
+                        newEntity.getActionComment()
+                ));
+            }
+        }
+
+        return diffs;
+    }
+}
