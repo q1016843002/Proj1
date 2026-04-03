@@ -1,0 +1,56 @@
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+public class AuditUtils {
+
+    // 3. Handle null and "" as "-"
+    public static String dashIfEmpty(String value) {
+        return (value == null || value.trim().isEmpty()) ? "-" : value;
+    }
+
+    // 5. Dynamic concatenation: ignores null/empty parts and joins with "-"
+    public static String concat(String... parts) {
+        if (parts == null) return "-";
+        String result = Arrays.stream(parts)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.joining("-"));
+        return dashIfEmpty(result);
+    }
+
+    // 7. Fallback: camelCase to Natural Language (e.g., serviceFamily -> Service family)
+    public static String toNaturalLanguage(String camelCase) {
+        if (camelCase == null || camelCase.isEmpty()) return "-";
+        String result = camelCase.replaceAll("([a-z])([A-Z]+)", "$1 $2").toLowerCase();
+        return result.substring(0, 1).toUpperCase() + result.substring(1);
+    }
+
+    // Date formatting: 20251001080000000 -> Oct'25
+    public static String toRelatedMonth(String yyyyMMdd) {
+        if (yyyyMMdd == null || yyyyMMdd.length() < 8) return "-";
+        try {
+            LocalDate date = LocalDate.parse(yyyyMMdd.substring(0, 8), DateTimeFormatter.ofPattern("yyyyMMdd"));
+            return date.format(DateTimeFormatter.ofPattern("MMM''yy"));
+        } catch (Exception e) {
+            return "-";
+        }
+    }
+
+    // Calculate percentage change safely
+    public static String calcChange(String prevVal, String currVal) {
+        try {
+            if (prevVal == null || currVal == null || prevVal.isEmpty() || currVal.isEmpty()) return "-";
+            double p = Double.parseDouble(prevVal);
+            double c = Double.parseDouble(currVal);
+            if (p == 0) return "-";
+            double change = ((c - p) / p) * 100;
+            return String.format("%.2f%%", change);
+        } catch (NumberFormatException e) {
+            return "-";
+        }
+    }
+}
