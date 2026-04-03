@@ -1,0 +1,78 @@
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.javers.core.Javers;
+import org.javers.core.diff.Diff;
+import org.javers.core.diff.changetype.PropertyChange;
+import org.javers.core.diff.changetype.ValueChange;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@Service
+public class FeeBillingAuditService {
+
+    private final ObjectMapper objectMapper;
+    private final Javers javers;
+
+    public FeeBillingAuditService(ObjectMapper objectMapper, Javers javers) {
+        this.objectMapper = objectMapper;
+        this.javers = javers;
+    }
+
+    public List<FeeBillingAuditTrailEntity> compare(String oldJson, String newJson) {
+        List<FeeBillingAuditTrailEntity> auditTrails = new ArrayList<>();
+
+        try {
+            FeeBillingData oldData = objectMapper.readValue(oldJson, new TypeReference<FeeBillingData>() {});
+            FeeBillingData newData = objectMapper.readValue(newJson, new TypeReference<FeeBillingData>() {});
+
+            // 1. Flatten and format shadow fields
+            if (oldData != null) oldData.prepareForAudit();
+            if (newData != null) newData.prepareForAudit();
+
+            // 2. Perform Javers Comparison
+            Diff diff = javers.compare(oldData, newData);
+            List<PropertyChange> changes = diff.getChangesByType(PropertyChange.class);
+
+            for (PropertyChange change : changes) {
+                // Ignore collection structure changes, only focus on concrete field values
+                if (!(change instanceof ValueChange)) continue;
+
+                Object targetInstance = change.getAffectedObject().orElse(null);
+                if (targetInstance == null) continue;
+
+                // 3. Extract Field Changed Name (Fallback to natural language)
+                String fieldChanged = extractFieldChanged(change);
+
+                // 4. Extract Dynamic Field Location
+                String fieldLocation = "Root"; // Default for root properties
+                if (targetInstance instanceof FeeBillingData.AuditLocatable) {
+                    fieldLocation = ((FeeBillingData.AuditLocatable) targetInstance).getAuditFieldLocation();
+                }
+
+                // 5. Build Result Entity
+                ValueChange vc = (ValueChange) change;
+                String prevVal = AuditUtils.dashIfEmpty(vc.getLeft() != null ? vc.getLeft().toString() : "-");
+                String newVal = AuditUtils.dashIfEmpty(vc.getRight() != null ? vc.getRight().toString() : "-");
+
+                auditTrails.add(new FeeBillingAuditTrailEntity(fieldLocation, fieldChanged, prevVal, newVal));
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return auditTrails;
+    }
+
+    // Helper: Extracts display name safely without raw reflection
+    private String extractFieldChanged(PropertyChange change) {
+        AuditMeta meta = change.getProperty().getAnnotation(AuditMeta.class);
+        if (meta != null && !meta.displayName().isEmpty()) {
+            return meta.displayName();
+        }
+        // 6 & 7. Fallback: Parse property name to natural language
+        return AuditUtils.toNaturalLanguage(change.getPropertyName());
+    }
+}
