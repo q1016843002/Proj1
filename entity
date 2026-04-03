@@ -1,0 +1,226 @@
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.Data;
+import org.javers.core.metamodel.annotation.DiffIgnore;
+import org.javers.core.metamodel.annotation.Id;
+import java.util.Comparator;
+import java.util.List;
+
+// 记得在这里 import 你自己的 @AuditMeta 所在的包
+// import com.yourcompany...AuditMeta;
+
+@Data
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class FeeBillingData {
+
+    public interface AuditLocatable {
+        String getAuditFieldLocation();
+    }
+
+    @AuditMeta(displayName = "Client code", tabName = "")
+    private String clientCode;
+
+    private List<AccountManager> accountManagers;
+
+    @AuditMeta(displayName = "Invoice type", tabName = "")
+    private String invoiceType;
+
+    @DiffIgnore private String billingStartDate;
+    @DiffIgnore private String billingEndDate;
+    
+    @AuditMeta(displayName = "Related month", tabName = "")
+    private String relatedMonth;
+
+    @AuditMeta(displayName = "Start date", tabName = "")
+    private String startDate;
+
+    @AuditMeta(displayName = "End date", tabName = "")
+    private String endDate;
+
+    // TODO: Add Enum implementation for MANUAL_DIRECT_DEBIT
+    @AuditMeta(displayName = "Payment method", tabName = "")
+    private String paymentMethod; 
+
+    private List<ProductInvoiceDetail> productInvoiceDetail;
+
+    public void prepareForAudit() {
+        if (this.accountManagers != null) {
+            this.accountManagers.sort(Comparator.comparing(m -> 
+                m.getParticipantDisplayName() != null ? m.getParticipantDisplayName() : ""));
+        }
+
+        String startMonth = AuditUtils.toRelatedMonth(this.billingStartDate);
+        String endMonth = AuditUtils.toRelatedMonth(this.billingEndDate);
+        this.relatedMonth = startMonth.equals(endMonth) ? startMonth : AuditUtils.concat(startMonth, endMonth);
+
+        if (this.productInvoiceDetail != null) {
+            this.productInvoiceDetail.forEach(ProductInvoiceDetail::prepareForAudit);
+        }
+    }
+
+    @Data
+    public static class AccountManager {
+        @Id private String participantAd;
+        @AuditMeta(displayName = "Participant display name", tabName = "")
+        private String participantDisplayName;
+    }
+
+    @Data
+    public static class ProductInvoiceDetail {
+        @Id private String displayOrder;
+        
+        @AuditMeta(displayName = "Sub product name", tabName = "")
+        private String subProductName;
+        
+        private List<TransactionalData> transactionalData;
+        private CalculationData calculationData;
+
+        public void prepareForAudit() {
+            if (transactionalData != null) {
+                transactionalData.forEach(TransactionalData::prepareForAudit);
+            }
+            if (calculationData != null && calculationData.getClientFeeServices() != null) {
+                calculationData.getClientFeeServices().forEach(s -> s.prepareForAudit(this.subProductName));
+            }
+        }
+    }
+
+    @Data
+    public static class TransactionalData {
+        @Id private String transactionalId; 
+
+        @AuditMeta(displayName = "Service family", tabName = "")
+        private String serviceFamily;
+        
+        @AuditMeta(displayName = "Service name", tabName = "")
+        private String serviceName;
+
+        private List<BasicPoint> basicPoint;
+        private List<PerFund> perFund;
+        private List<VolumePerFund> volumePerFund;
+
+        public void prepareForAudit() {
+            this.transactionalId = AuditUtils.concat(serviceFamily, serviceName);
+            String locPrefix = AuditUtils.concat(serviceFamily, serviceName, "Transactional Input");
+
+            if (basicPoint != null) basicPoint.forEach(f -> f.prepareForAudit(locPrefix));
+            if (perFund != null) perFund.forEach(f -> f.prepareForAudit(locPrefix));
+            if (volumePerFund != null) volumePerFund.forEach(f -> f.prepareForAudit(locPrefix));
+        }
+    }
+
+    @Data
+    public static abstract class FundBase implements AuditLocatable {
+        @Id private String fundCode;
+        @AuditMeta(displayName = "Fund name", tabName = "") private String fundName;
+        @AuditMeta(displayName = "Category", tabName = "") private String category;
+        @AuditMeta(displayName = "Invoice group", tabName = "") private String invoiceGroup;
+        @AuditMeta(displayName = "Effective fund working days", tabName = "") private String effectiveFundWorkingDays;
+
+        @DiffIgnore private Amount priviousInputAmount;
+        @DiffIgnore private Amount inputAmount;
+        @DiffIgnore private String auditFieldLocation;
+
+        @AuditMeta(displayName = "Change", tabName = "") 
+        private String change;
+
+        public void prepareForAudit(String locPrefix) {
+            this.auditFieldLocation = AuditUtils.concat(locPrefix, fundCode);
+            String prevVal = priviousInputAmount != null ? priviousInputAmount.getValue() : null;
+            String currVal = inputAmount != null ? inputAmount.getValue() : null;
+            this.change = AuditUtils.calcChange(prevVal, currVal);
+            setShadowAmounts();
+        }
+
+        protected abstract void setShadowAmounts();
+    }
+
+    @Data public static class BasicPoint extends FundBase {
+        @AuditMeta(displayName = "prev.AuA", tabName = "") private String previousFormatted;
+        @AuditMeta(displayName = "AuA", tabName = "") private String inputFormatted;
+        @Override protected void setShadowAmounts() {
+            this.previousFormatted = getPriviousInputAmount() != null ? getPriviousInputAmount().getValue() : null;
+            this.inputFormatted = getInputAmount() != null ? getInputAmount().getValue() : null;
+        }
+    }
+
+    @Data public static class PerFund extends FundBase {
+        @AuditMeta(displayName = "Previous fee", tabName = "") private String previousFormatted;
+        @AuditMeta(displayName = "Fee", tabName = "") private String inputFormatted;
+        @Override protected void setShadowAmounts() {
+            this.previousFormatted = getPriviousInputAmount() != null ? getPriviousInputAmount().getValue() : null;
+            this.inputFormatted = getInputAmount() != null ? getInputAmount().getValue() : null;
+        }
+    }
+
+    @Data public static class VolumePerFund extends FundBase {
+        @AuditMeta(displayName = "Previous volume", tabName = "") private String previousFormatted;
+        @AuditMeta(displayName = "Volume", tabName = "") private String inputFormatted;
+        @Override protected void setShadowAmounts() {
+            this.previousFormatted = getPriviousInputAmount() != null ? getPriviousInputAmount().getValue() : null;
+            this.inputFormatted = getInputAmount() != null ? getInputAmount().getValue() : null;
+        }
+    }
+
+    @Data
+    public static class CalculationData {
+        private List<ClientFeeService> clientFeeServices;
+    }
+
+    @Data
+    public static class ClientFeeService implements AuditLocatable {
+        @DiffIgnore private String serviceFamily;
+        @DiffIgnore private String serviceName;
+        
+        @Id 
+        @AuditMeta(displayName = "Service", tabName = "") 
+        private String service;
+        
+        @AuditMeta(displayName = "Category", tabName = "") 
+        private String category;
+
+        @DiffIgnore private ClientFeeConfigData clientFeeConfigData;
+        @AuditMeta(displayName = "Fee type", tabName = "") 
+        private String feeType;
+
+        @DiffIgnore private Amount prevTotalAuaOrVolume;
+        @DiffIgnore private Amount totalAuaOrVolume;
+        @DiffIgnore private Amount prevTotalFee;
+        @DiffIgnore private Amount totalFee;
+
+        @AuditMeta(displayName = "Previous Total AuA/Volume", tabName = "") private String prevTotalAuaOrVolumeFormatted;
+        @AuditMeta(displayName = "Total AuA/Volume", tabName = "") private String totalAuaOrVolumeFormatted;
+        @AuditMeta(displayName = "Previous Total Fee", tabName = "") private String prevTotalFeeFormatted;
+        @AuditMeta(displayName = "Total Fee", tabName = "") private String totalFeeFormatted;
+
+        @AuditMeta(displayName = "Change", tabName = "") private String change;
+        @AuditMeta(displayName = "Variance check option", tabName = "") private String varicanceCheckOption;
+        @AuditMeta(displayName = "Variance check commentary", tabName = "") private String varianceCheckCommentray;
+
+        @DiffIgnore private String auditFieldLocation;
+
+        public void prepareForAudit(String subProductName) {
+            this.service = AuditUtils.concat(serviceFamily, serviceName);
+            this.auditFieldLocation = AuditUtils.concat(subProductName, this.service, category);
+            
+            if (clientFeeConfigData != null) {
+                this.feeType = clientFeeConfigData.getFeeType();
+            }
+
+            this.prevTotalAuaOrVolumeFormatted = formatAmount(prevTotalAuaOrVolume);
+            this.totalAuaOrVolumeFormatted = formatAmount(totalAuaOrVolume);
+            this.prevTotalFeeFormatted = formatAmount(prevTotalFee);
+            this.totalFeeFormatted = formatAmount(totalFee);
+
+            String prevFeeVal = prevTotalFee != null ? prevTotalFee.getValue() : null;
+            String currFeeVal = totalFee != null ? totalFee.getValue() : null;
+            this.change = AuditUtils.calcChange(prevFeeVal, currFeeVal);
+        }
+
+        private String formatAmount(Amount amt) {
+            return amt != null ? AuditUtils.concat(amt.getPrefix(), amt.getValue()) : null;
+        }
+    }
+
+    @Data public static class Amount { String prefix; String value; }
+    @Data public static class ClientFeeConfigData { String feeType; }
+}
